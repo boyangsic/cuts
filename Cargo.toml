@@ -1,0 +1,4 @@
+[workspace]
+members = ["core", "cli"]
+
+repository = "https://github.com/boyangsic/cuts"
