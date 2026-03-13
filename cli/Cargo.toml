@@ -8,3 +8,7 @@ walkdir = "2.5.0"
 cuts-core = { path = "../core", version = "0.1.0" }
 rand = "0.10.0"
 hex = "0.4.3"
+
+[[bin]]
+name = "cuts"
+path = "src/main.rs"
