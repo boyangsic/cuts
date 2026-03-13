@@ -2,6 +2,9 @@
 name = "cuts-core"
 version = "0.1.0"
 edition = "2024"
+description = "core library for cuts"
+license = "MIT"
+repository = "https://github.com/boyangsic/cuts"
 
 [dependencies]
 bitflags = "2.11.0"
