@@ -4,9 +4,16 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use lz4::Decoder;
 
 use crate::{
-    crypto::decrypt,
-    types::{Asset, AssetFlags, Errors, Header},
+    crypto::{decrypt, index_aad},
+    types::{Asset, AssetFlags, Errors, Header, MAX_DECOMPRESSED, VERSION},
 };
+
+fn stream_len<R: Seek>(reader: &mut R) -> std::io::Result<u64> {
+    let cur = reader.stream_position()?;
+    let end = reader.seek(SeekFrom::End(0))?;
+    reader.seek(SeekFrom::Start(cur))?;
+    Ok(end)
+}
 
 pub fn read_header<R: Read + Seek>(reader: &mut R) -> Result<Header, Errors> {
     let mut magic = [0u8; 4];
@@ -21,6 +28,10 @@ pub fn read_header<R: Read + Seek>(reader: &mut R) -> Result<Header, Errors> {
     let version = reader
         .read_u16::<LittleEndian>()
         .map_err(|_| Errors::InvalidHeader)?;
+
+    if version != VERSION {
+        return Err(Errors::InCompatibleVersion(version)); // 빌드마다아마 형식다를껄?...
+    }
 
     let assets_count = reader
         .read_u32::<LittleEndian>()
@@ -57,6 +68,11 @@ pub fn read_index<R: Read + Seek>(
 ) -> Result<Vec<Asset>, Errors> {
     let mut assets: Vec<Asset> = Vec::new();
 
+    let file_len = stream_len(reader).map_err(|_| Errors::InvalidIndex)?;
+    if header.index_start > file_len || header.index_size as u64 > file_len - header.index_start {
+        return Err(Errors::InvalidIndex);
+    }
+
     reader
         .seek(SeekFrom::Start(header.index_start))
         .map_err(|_| Errors::InvalidIndex)?;
@@ -66,7 +82,13 @@ pub fn read_index<R: Read + Seek>(
         .read_exact(&mut encrypted)
         .map_err(|_| Errors::InvalidIndex)?;
 
-    let decrypted = decrypt(key, &encrypted)?;
+    let aad = index_aad(
+        header.version,
+        header.assets_count,
+        &header.salt,
+        header.index_start,
+    );
+    let decrypted = decrypt(key, &encrypted, &aad)?;
     let decrypted_len = decrypted.len() as u64;
     let mut cursor = Cursor::new(decrypted);
 
@@ -92,11 +114,11 @@ pub fn read_index<R: Read + Seek>(
             .map_err(|_| Errors::InvalidIndex)?;
 
         let size = cursor
-            .read_u32::<LittleEndian>()
+            .read_u64::<LittleEndian>()
             .map_err(|_| Errors::InvalidIndex)?;
 
         let size_expected = cursor
-            .read_u32::<LittleEndian>()
+            .read_u64::<LittleEndian>()
             .map_err(|_| Errors::InvalidIndex)?;
 
         let flags_raw = cursor.read_u8().map_err(|_| Errors::InvalidIndex)?;
@@ -126,6 +148,11 @@ pub fn read_asset<R: Read + Seek>(
     asset: &Asset,
     key: &[u8; 32],
 ) -> Result<Vec<u8>, Errors> {
+    let file_len = stream_len(reader).map_err(|_| Errors::InvalidAsset)?;
+    if asset.start > file_len || asset.size as u64 > file_len - asset.start {
+        return Err(Errors::InvalidAsset);
+    }
+
     reader
         .seek(SeekFrom::Start(asset.start))
         .map_err(|_| Errors::InvalidAsset)?;
@@ -135,7 +162,8 @@ pub fn read_asset<R: Read + Seek>(
         .read_exact(&mut data_raw)
         .map_err(|_| Errors::InvalidAsset)?;
 
-    let decrypted = decrypt(key, &data_raw).map_err(|_| Errors::DecryptionFailed)?;
+    let decrypted =
+        decrypt(key, &data_raw, asset.id.as_bytes()).map_err(|_| Errors::DecryptionFailed)?;
 
     let data = if asset.flags.contains(AssetFlags::COMPRESSED) {
         decompress(decrypted, asset).map_err(|_| Errors::DecompressFailed)?
@@ -152,13 +180,19 @@ pub fn read_asset<R: Read + Seek>(
 }
 
 fn decompress(data_raw: Vec<u8>, asset: &Asset) -> Result<Vec<u8>, Errors> {
-    let mut decoder = Decoder::new(&data_raw[..]).map_err(|_| Errors::DecompressFailed)?;
+    if asset.size_expected as u64 > MAX_DECOMPRESSED {
+        return Err(Errors::DecompressFailed);
+    }
+
+    let decoder = Decoder::new(&data_raw[..]).map_err(|_| Errors::DecompressFailed)?;
+
+    let mut limited = decoder.take(asset.size_expected as u64 + 1);
 
     let mut decompressed = Vec::with_capacity(asset.size_expected as usize);
-
-    decoder
+    limited
         .read_to_end(&mut decompressed)
         .map_err(|_| Errors::DecompressFailed)?;
+
     if decompressed.len() != asset.size_expected as usize {
         return Err(Errors::DecompressFailed);
     }

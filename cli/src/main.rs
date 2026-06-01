@@ -35,7 +35,8 @@ fn pack(path_raw: String, out_name: Option<String>) {
 
     println!("{} files", count);
 
-    writer::write_placeholder(out, 1, count, *salt).expect("failed to write header");
+    writer::write_placeholder(out, cuts_core::types::VERSION, count, *salt)
+        .expect("failed to write header");
 
     dir.iter().for_each(|file| {
         let start = Instant::now();
@@ -49,7 +50,8 @@ fn pack(path_raw: String, out_name: Option<String>) {
     });
 
     println!("processing index");
-    writer::write_index(out, 0, 1, &assets, *salt, key).expect("failed to write index");
+    writer::write_index(out, 0, cuts_core::types::VERSION, &assets, *salt, key)
+        .expect("failed to write index");
 
     println!("wrote file '{}'\nkey >> {}", out_name, hex::encode(key));
 }

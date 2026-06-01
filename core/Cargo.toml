@@ -1,17 +1,16 @@
 [package]
 name = "cuts-core"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "core library for cuts"
 license = "MIT"
 repository = "https://github.com/boyangsic/cuts"
 
 [dependencies]
+argon2 = "0.5.3"
 bitflags = "2.11.0"
 blake3 = "1.8.3"
 byteorder = "1.5.0"
-chacha20-poly1305 = "0.1.2"
-hkdf = "0.12.4"
+chacha20poly1305 = "0.10.1"
 lz4 = "1.28.1"
 rand = "0.10.0"
-sha2 = "0.10.9"

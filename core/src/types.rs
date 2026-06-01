@@ -1,5 +1,7 @@
 use bitflags::bitflags;
 
+pub const VERSION: u16 = 2;
+pub const MAX_DECOMPRESSED: u64 = 1024 * 1024 * 1024; // 1gb넘는건 필요가업슴...
 #[derive(Debug)]
 
 pub struct Header {
@@ -20,9 +22,9 @@ pub struct Asset {
     pub id: String, // "stuff/stuff2/stuff3.png"
 
     pub start: u64, // [nonce12B][encdata][tag16B]
-    pub size: u32,  // 이미 암호화된거(nonce포함)
+    pub size: u64,  // 이미 암호화된거(nonce포함)
 
-    pub size_expected: u32, // << 미리 할당전용으로 저장해놔야함
+    pub size_expected: u64, // << 미리 할당전용으로 저장해놔야함
 
     pub flags: AssetFlags,
 
@@ -41,6 +43,7 @@ bitflags! {
 pub enum Errors {
     InvalidFileType,
     InvalidHeader,
+    InCompatibleVersion(u16), // [V1 / V2 (거의다뜯어고쳣농)],
     InvalidIndex,
     InvalidAsset,
     DecompressFailed,

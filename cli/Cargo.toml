@@ -1,7 +1,11 @@
 [package]
 name = "cuts-cli"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
+description = "cli for cuts"
+license = "MIT"
+repository = "https://github.com/boyangsic/cuts"
+
 
 [dependencies]
 walkdir = "2.5.0"
