@@ -1,15 +1,29 @@
 use core::panic;
 use std::{
     env,
-    fs::{self, File, FileType, create_dir, read_dir},
-    io,
-    path::Path,
+    fs::{self, File, create_dir},
+    path::{Component, Path, PathBuf},
     time::Instant,
 };
 
-use cuts_core::{reader, types::Asset, writer};
+use cuts_core::{crypto::get_master_key, reader, types::Asset, writer};
 use rand::Rng;
 use walkdir::{DirEntry, WalkDir};
+use zeroize::Zeroizing;
+
+fn safe_join(base: &Path, id: &str) -> Option<PathBuf> {
+    if id.is_empty() || id.contains('\0') || id.contains('\\') {
+        return None;
+    }
+    let mut path = base.to_path_buf();
+    for comp in Path::new(id).components() {
+        match comp {
+            Component::Normal(c) => path.push(c),
+            _ => return None,
+        }
+    }
+    Some(path)
+}
 
 fn pack(path_raw: String, out_name: Option<String>) {
     if !Path::new(&path_raw).is_dir() {
@@ -17,7 +31,6 @@ fn pack(path_raw: String, out_name: Option<String>) {
     }
 
     let out_name = out_name.unwrap_or("out".into()) + ".cuts";
-    let out = &mut File::create(&out_name).unwrap();
 
     let dir: Vec<DirEntry> = WalkDir::new(&path_raw)
         .into_iter()
@@ -28,8 +41,23 @@ fn pack(path_raw: String, out_name: Option<String>) {
 
     let salt = &mut [0u8; 32];
     rand::rng().fill_bytes(salt);
-    let key = &mut [0u8; 32];
-    rand::rng().fill_bytes(key);
+
+    let password = Zeroizing::new(
+        rpassword::prompt_password("set password >> ").expect("failed to read password"),
+    );
+    let confirm = Zeroizing::new(
+        rpassword::prompt_password("confirm password >> ").expect("failed to read password"),
+    );
+    if *password != *confirm {
+        panic!("passwords do not match");
+    }
+    if password.is_empty() {
+        panic!("password must not be empty");
+    }
+
+    let master = get_master_key(password.as_bytes(), salt).expect("failed to derive key");
+
+    let out = &mut File::create(&out_name).unwrap();
 
     let mut assets: Vec<Asset> = Vec::new();
 
@@ -43,17 +71,25 @@ fn pack(path_raw: String, out_name: Option<String>) {
         let id = file.path().to_str().unwrap();
         println!("processing file '{}'", id);
         let data = fs::read(file.path()).unwrap();
-        let asset = writer::write_asset(out, file.path().to_str().unwrap(), &data, true, key)
-            .expect(&format!("failed to write asset '{}'", id));
+        let asset = writer::write_asset(
+            out,
+            file.path().to_str().unwrap(),
+            &data,
+            true,
+            false,
+            None,
+            &master,
+        )
+        .expect(&format!("failed to write asset '{}'", id));
         assets.push(asset);
         println!("processed '{}' in {:?}", id, start.elapsed());
     });
 
     println!("processing index");
-    writer::write_index(out, 0, cuts_core::types::VERSION, &assets, *salt, key)
+    writer::write_index(out, 0, cuts_core::types::VERSION, &assets, *salt, &master)
         .expect("failed to write index");
 
-    println!("wrote file '{}'\nkey >> {}", out_name, hex::encode(key));
+    println!("wrote file '{}'", out_name);
 }
 
 fn unpack(path_raw: String, out_name: Option<String>) {
@@ -61,35 +97,30 @@ fn unpack(path_raw: String, out_name: Option<String>) {
         panic!("file '{}' not found", path_raw);
     }
 
-    let stdin = io::stdin();
-    let mut key_raw = String::new();
+    let mut file = File::open(&path_raw).expect("failed to open file");
+    let header = reader::read_header(&mut file).expect("failed to read header");
 
-    println!("enter key >> ");
-    stdin.read_line(&mut key_raw).expect("failed to read key");
+    let password = Zeroizing::new(
+        rpassword::prompt_password("enter password >> ").expect("failed to read password"),
+    );
+    let master = get_master_key(password.as_bytes(), &header.salt).expect("failed to derive key");
 
-    let key_raw = key_raw.trim();
-    let key = hex::decode(key_raw).expect("failed to decode key");
-
-    if key.len() != 32 {
-        panic!("key must be 32 bytes");
-    }
-
-    let key: [u8; 32] = key.try_into().expect("failed to convert key");
+    let assets = reader::read_index(&mut file, &header, &master)
+        .expect("failed to read index!! (wrong password?)");
+    println!("{} assets", assets.len());
 
     let out_name = out_name.unwrap_or("out".into());
     create_dir(&out_name).expect("failed to create output folder");
 
-    let mut file = File::open(&path_raw).expect("failed to open file");
-    let header = reader::read_header(&mut file).expect("failed to read header");
-    let assets = reader::read_index(&mut file, &header, &key).expect("failed to read index");
-    println!("{} assets", assets.len());
-
     assets.iter().for_each(|asset| {
         let start = Instant::now();
         println!("processing asset '{}'", asset.id);
-        let data = reader::read_asset(&mut file, asset, &key)
+        let data = reader::read_asset(&mut file, asset, &master)
             .expect(&format!("failed to read asset '{}'", asset.id));
-        let out_path = Path::new(&out_name).join(&asset.id);
+        let out_path = match safe_join(Path::new(&out_name), &asset.id) {
+            Some(p) => p,
+            None => panic!("unsafe asset id '{}'", asset.id),
+        };
         if let Some(parent) = out_path.parent() {
             fs::create_dir_all(parent).expect("failed to create output folder");
         }

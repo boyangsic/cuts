@@ -1,5 +1,5 @@
 # CUTS
 
-## custom asset packing format
+## this project is not stable and currently incompatible each version, use at your own risk
 
-not finished
+simple custom assets packing format that does encryption + compress

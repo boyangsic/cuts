@@ -11,7 +11,8 @@ repository = "https://github.com/boyangsic/cuts"
 walkdir = "2.5.0"
 cuts-core = { path = "../core", version = "0.1.0" }
 rand = "0.10.0"
-hex = "0.4.3"
+rpassword = "7.3.1"
+zeroize = "1.8.2"
 
 [[bin]]
 name = "cuts"

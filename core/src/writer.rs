@@ -5,7 +5,7 @@ use lz4::EncoderBuilder;
 use rand::Rng;
 
 use crate::{
-    crypto::{encrypt, index_aad},
+    crypto::{asset_key, encrypt, index_aad, index_key},
     types::{Asset, AssetFlags, Errors},
 };
 
@@ -39,10 +39,12 @@ pub fn write_asset<W: Write + Seek>(
     id: &str,
     data: &[u8],
     compress: bool,
-    key: &[u8; 32],
+    streamable: bool,
+    chunk_size: Option<u64>,
+    master: &[u8; 32],
 ) -> Result<Asset, Errors> {
     let hash = blake3::hash(data);
-    let size_original = data.len() as u32;
+    let size_original = data.len() as u64;
 
     let payload: Vec<u8> = if compress {
         let mut encoder = EncoderBuilder::new()
@@ -60,8 +62,8 @@ pub fn write_asset<W: Write + Seek>(
     let mut nonce: [u8; 12] = [0u8; 12];
     rand::rng().fill_bytes(&mut nonce);
 
-    let data =
-        encrypt(key, &nonce, &payload, id.as_bytes()).map_err(|_| Errors::EncryptionFailed)?;
+    let data = encrypt(&asset_key(master, id.as_bytes()), &nonce, &payload, id.as_bytes())
+        .map_err(|_| Errors::EncryptionFailed)?;
 
     let start = writer.stream_position().map_err(|_| Errors::InvalidAsset)?;
 
@@ -80,7 +82,15 @@ pub fn write_asset<W: Write + Seek>(
             if compress {
                 f |= AssetFlags::COMPRESSED;
             }
+            if streamable {
+                f |= AssetFlags::STREAMABLE;
+            }
             f
+        },
+        chunk_size: if streamable {
+            chunk_size.unwrap_or(1024)
+        } else {
+            0
         },
         hash: {
             let mut h = [0u8; 32]; // BLAKE3
@@ -98,7 +108,7 @@ pub fn write_index<W: Write + Seek>(
     version: u16,
     assets: &[Asset],
     salt: [u8; 32],
-    key: &[u8; 32],
+    master: &[u8; 32],
 ) -> Result<(), Errors> {
     let index_start = writer
         .stream_position()
@@ -125,6 +135,9 @@ pub fn write_index<W: Write + Seek>(
             .write_u8(asset.flags.bits())
             .map_err(|_| Errors::InvalidIndex)?;
         plain
+            .write_u64::<LittleEndian>(asset.chunk_size)
+            .map_err(|_| Errors::InvalidIndex)?;
+        plain
             .write_all(&asset.hash)
             .map_err(|_| Errors::InvalidIndex)?;
     }
@@ -132,7 +145,8 @@ pub fn write_index<W: Write + Seek>(
     let mut nonce = [0u8; 12];
     rand::rng().fill_bytes(&mut nonce);
     let aad = index_aad(version, assets.len() as u32, &salt, index_start);
-    let index = encrypt(key, &nonce, &plain, &aad).map_err(|_| Errors::EncryptionFailed)?;
+    let index = encrypt(&index_key(master), &nonce, &plain, &aad)
+        .map_err(|_| Errors::EncryptionFailed)?;
 
     writer.write_all(&index).map_err(|_| Errors::InvalidIndex)?;
 

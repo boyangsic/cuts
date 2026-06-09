@@ -4,8 +4,8 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use lz4::Decoder;
 
 use crate::{
-    crypto::{decrypt, index_aad},
-    types::{Asset, AssetFlags, Errors, Header, MAX_DECOMPRESSED, VERSION},
+    crypto::{asset_key, decrypt, index_aad, index_key},
+    types::{Asset, AssetFlags, Errors, Header, VERSION},
 };
 
 fn stream_len<R: Seek>(reader: &mut R) -> std::io::Result<u64> {
@@ -64,7 +64,7 @@ pub fn read_header<R: Read + Seek>(reader: &mut R) -> Result<Header, Errors> {
 pub fn read_index<R: Read + Seek>(
     reader: &mut R,
     header: &Header,
-    key: &[u8; 32],
+    master: &[u8; 32],
 ) -> Result<Vec<Asset>, Errors> {
     let mut assets: Vec<Asset> = Vec::new();
 
@@ -88,7 +88,7 @@ pub fn read_index<R: Read + Seek>(
         &header.salt,
         header.index_start,
     );
-    let decrypted = decrypt(key, &encrypted, &aad)?;
+    let decrypted = decrypt(&index_key(master), &encrypted, &aad)?;
     let decrypted_len = decrypted.len() as u64;
     let mut cursor = Cursor::new(decrypted);
 
@@ -124,6 +124,14 @@ pub fn read_index<R: Read + Seek>(
         let flags_raw = cursor.read_u8().map_err(|_| Errors::InvalidIndex)?;
         let flags = AssetFlags::from_bits_truncate(flags_raw);
 
+        let chunk_size = cursor
+            .read_u64::<LittleEndian>()
+            .map_err(|_| Errors::InvalidIndex)?;
+
+        if flags.contains(AssetFlags::STREAMABLE) && chunk_size < 1 {
+            return Err(Errors::InvalidIndex);
+        }
+
         let mut hash = [0u8; 32];
         cursor
             .read_exact(&mut hash)
@@ -136,6 +144,7 @@ pub fn read_index<R: Read + Seek>(
             size,
             size_expected,
             flags,
+            chunk_size,
             hash,
         });
     }
@@ -146,7 +155,7 @@ pub fn read_index<R: Read + Seek>(
 pub fn read_asset<R: Read + Seek>(
     reader: &mut R,
     asset: &Asset,
-    key: &[u8; 32],
+    master: &[u8; 32],
 ) -> Result<Vec<u8>, Errors> {
     let file_len = stream_len(reader).map_err(|_| Errors::InvalidAsset)?;
     if asset.start > file_len || asset.size as u64 > file_len - asset.start {
@@ -162,8 +171,12 @@ pub fn read_asset<R: Read + Seek>(
         .read_exact(&mut data_raw)
         .map_err(|_| Errors::InvalidAsset)?;
 
-    let decrypted =
-        decrypt(key, &data_raw, asset.id.as_bytes()).map_err(|_| Errors::DecryptionFailed)?;
+    let decrypted = decrypt(
+        &asset_key(master, asset.id.as_bytes()),
+        &data_raw,
+        asset.id.as_bytes(),
+    )
+    .map_err(|_| Errors::DecryptionFailed)?;
 
     let data = if asset.flags.contains(AssetFlags::COMPRESSED) {
         decompress(decrypted, asset).map_err(|_| Errors::DecompressFailed)?
@@ -180,7 +193,8 @@ pub fn read_asset<R: Read + Seek>(
 }
 
 fn decompress(data_raw: Vec<u8>, asset: &Asset) -> Result<Vec<u8>, Errors> {
-    if asset.size_expected as u64 > MAX_DECOMPRESSED {
+    if asset.size_expected as u64 > (1024 * 1024 * 1024) {
+        // 한파일당 1GB넘는거 X
         return Err(Errors::DecompressFailed);
     }
 

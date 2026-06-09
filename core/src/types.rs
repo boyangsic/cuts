@@ -1,7 +1,6 @@
 use bitflags::bitflags;
 
 pub const VERSION: u16 = 2;
-pub const MAX_DECOMPRESSED: u64 = 1024 * 1024 * 1024; // 1gb넘는건 필요가업슴...
 #[derive(Debug)]
 
 pub struct Header {
@@ -28,6 +27,8 @@ pub struct Asset {
 
     pub flags: AssetFlags,
 
+    pub chunk_size: u64, // 스트림 flag없으면 none
+
     pub hash: [u8; 32], // BLAKE3
 }
 
@@ -35,6 +36,7 @@ bitflags! {
     #[derive(Debug, Clone)]
     pub struct AssetFlags: u8 {
         const COMPRESSED = 1 << 0;
+        const STREAMABLE = 1 << 1; // 이거 없으면 chunk_size있어도 씹힘
     }
 }
 
