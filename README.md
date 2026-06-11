@@ -5,6 +5,6 @@
 simple custom assets packing format that does encryption + compress
 
 ### todo
-implement streaming
-reduce memory usage
-make asset only alive when its being used
+- implement streaming
+- reduce memory usage
+- make asset only alive when its being used
